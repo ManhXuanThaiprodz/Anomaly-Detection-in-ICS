@@ -33,8 +33,9 @@ import sys
 import time
 from detector.rf import RandomForestDetector
 from sklearn.multioutput import MultiOutputRegressor
+from detector.Xgboost import XGBoostDetector
 from tqdm import tqdm
-
+from xgboost import XGBRegressor
 # Ignore ugly futurewarnings from np vs tf.
 import warnings
 from sklearn.ensemble import RandomForestRegressor
@@ -178,7 +179,7 @@ def hyperparameter_search(
     run_name="results",
     verbose=1,
 ):
-
+    print("Xval shape: ", Xval.shape)
     model_name = config["name"]
     do_batches = False
 
@@ -651,104 +652,144 @@ if __name__ == "__main__":
     shuffle = True
     by_idx = True
 
-    # Updates training parameters such as batch size, learning rate, etc.
-    if model_type == "AE":
-        config.update({"train": ae_train_params})
-        Xtrain, Xval, _, _ = train_test_split(
-            Xfull, Xfull, test_size=0.2, random_state=42, shuffle=True
-        )
-        event_detector = train_reconstruction_model(model_type, config, Xtrain, Xval)
+    model_params = config["model"]
 
-        # Search for the best tuning of the window and theta parameters
-        hyperparameter_search(
-            event_detector,
-            model_type,
-            config,
-            Xval,
-            Xtest,
-            Ytest,
-            dataset_name,
-            test_split=test_split,
-            run_name=run_name,
-            verbose=0,
-        )
-    elif model_type == "RF":
-        event_detector = RandomForestRegressor(n_estimators=100, random_state=42, warm_start=False, verbose=2)
 
-        print("Đang train RF...")
+    ################
+    
+    
+    # Xtrain_flat = X_train_windowed.reshape(X_train_windowed.shape[0], -1)
+    # Ytrain_flat = Y_train_windowed.reshape(Y_train_windowed.shape[0], -1)
+    # Xtrain_small = Xtrain_flat[:100]
+    # Ytrain_small = Ytrain_flat[:100]
+    # print("XGBoost training...")
+    # event_detector.fit(Xtrain_small, Ytrain_small)
+    # print("XGBoost training completed!")
+    event_detector = XGBoostDetector(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42, verbosity =3)
+    event_detector.train(X_train_windowed, Y_train_windowed)
+    Ytest = Ytest.astype(int)
+    Xtest_val, Xtest_test, Ytest_val, Ytest_test = utils.custom_train_test_split(
+        dataset_name, Xtest, Ytest, test_size=test_split, shuffle=False
+    )
+        #MSE
+    test_errors = event_detector.reconstruction_errors(Xtest_val, batches=True)
+    test_instance_errors = test_errors.mean(axis=1)
+    print("MSE: ", test_instance_errors)
 
-        # Chuyển đổi dữ liệu về dạng phù hợp
-        Xtrain_flat = X_train_windowed.reshape(X_train_windowed.shape[0], -1)
-        Ytrain_flat = Y_train_windowed.reshape(Y_train_windowed.shape[0], -1)
+    # hyperparameter_search(
+    #         event_detector,
+    #         model_type,
+    #         config,
+    #         Xfull,
+    #         Xtest,
+    #         Ytest,
+    #         dataset_name,
+    #         test_split=test_split,
+    #         run_name=run_name,
+    #         verbose=0,
+    #     )
+    ################
 
-        print("X_train_flat shape:", Xtrain_flat.shape)
-        print("Y_train_flat shape:", Ytrain_flat.shape)
+    
 
-        # Hiển thị một mẫu bất kỳ
-        sample_idx = 0  
-        sample_X = Xtrain_flat[sample_idx]  # (4300,)
-        sample_Y = Ytrain_flat[sample_idx]  # (43,)
+    # # Updates training parameters such as batch size, learning rate, etc.
+    # if model_type == "AE":
+    #     config.update({"train": ae_train_params})
+    #     Xtrain, Xval, _, _ = train_test_split(
+    #         Xfull, Xfull, test_size=0.2, random_state=42, shuffle=True
+    #     )
+    #     event_detector = train_reconstruction_model(model_type, config, Xtrain, Xval)
 
-        df_sample = pd.DataFrame([sample_X], columns=[f"Feature_{i}" for i in range(Xtrain_flat.shape[1])])
-        df_Y = pd.DataFrame([sample_Y], columns=[f"Target_{i}" for i in range(Ytrain_flat.shape[1])])
+    #     # Search for the best tuning of the window and theta parameters
+    #     hyperparameter_search(
+    #         event_detector,
+    #         model_type,
+    #         config,
+    #         Xval,
+    #         Xtest,
+    #         Ytest,
+    #         dataset_name,
+    #         test_split=test_split,
+    #         run_name=run_name,
+    #         verbose=0,
+    #     )
+    # elif model_type == "RF":
+    #     event_detector = RandomForestRegressor(n_estimators=100, random_state=42, warm_start=False, verbose=2)
 
-        print("\n📌 Dữ liệu X_train_flat:")
-        print(df_sample.head())
-        print("\n📌 Dữ liệu Y_train_flat:")
-        print(df_Y.head())
+    #     print("Đang train RF...")
 
-        # Huấn luyện mô hình với thanh tiến trình
-        print("Training Random Forest with progress bar...")
-        event_detector.fit(Xtrain_flat, Ytrain_flat, )
-        print("Training Completed!")
+    #     # Chuyển đổi dữ liệu về dạng phù hợp
+    #     Xtrain_flat = X_train_windowed.reshape(X_train_windowed.shape[0], -1)
+    #     Ytrain_flat = Y_train_windowed.reshape(Y_train_windowed.shape[0], -1)
 
-        # Search for the best tuning of the window and theta parameters
-        hyperparameter_search(
-            event_detector,
-            model_type,
-            config,
-            Xfull,
-            Xtest,
-            Ytest,
-            dataset_name,
-            test_split=test_split,
-            run_name=run_name,
-            verbose=0,
-        )
+    #     print("X_train_flat shape:", Xtrain_flat.shape)
+    #     print("Y_train_flat shape:", Ytrain_flat.shape)
 
-    else:
+    #     # Hiển thị một mẫu bất kỳ
+    #     sample_idx = 0  
+    #     sample_X = Xtrain_flat[sample_idx]  # (4300,)
+    #     sample_Y = Ytrain_flat[sample_idx]  # (43,)
 
-        history = config["model"]["history"]
+    #     df_sample = pd.DataFrame([sample_X], columns=[f"Feature_{i}" for i in range(Xtrain_flat.shape[1])])
+    #     df_Y = pd.DataFrame([sample_Y], columns=[f"Target_{i}" for i in range(Ytrain_flat.shape[1])])
 
-        train_idxs, val_idxs = utils.train_val_history_idx_split(Xfull, history)
+    #     print("\n📌 Dữ liệu X_train_flat:")
+    #     print(df_sample.head())
+    #     print("\n📌 Dữ liệu Y_train_flat:")
+    #     print(df_Y.head())
 
-        large_train_params["steps_per_epoch"] = (
-            len(train_idxs) // large_train_params["batch_size"]
-        )
-        large_train_params["validation_steps"] = (
-            len(val_idxs) // large_train_params["batch_size"]
-        )
-        config.update({"train": large_train_params})
+    #     # Huấn luyện mô hình với thanh tiến trình
+    #     print("Training Random Forest with progress bar...")
+    #     event_detector.fit(Xtrain_flat, Ytrain_flat, )
+    #     print("Training Completed!")
 
-        event_detector = train_forecast_model_by_idxs(
-            model_type, config, Xfull, train_idxs, val_idxs
-        )
-        print("-----------------------------------------------")
-        print(val_idxs)
-        # Search for the best tuning of the window and theta parameters
-        hyperparameter_search(
-            event_detector,
-            model_type,
-            config,
-            Xfull,
-            Xtest,
-            Ytest,
-            dataset_name,
-            val_idxs=val_idxs,
-            test_split=test_split,
-            run_name=run_name,
-            verbose=0,
-        )
+    #     # Search for the best tuning of the window and theta parameters
+    #     hyperparameter_search(
+    #         event_detector,
+    #         model_type,
+    #         config,
+    #         Xfull,
+    #         Xtest,
+    #         Ytest,
+    #         dataset_name,
+    #         test_split=test_split,
+    #         run_name=run_name,
+    #         verbose=0,
+    #     )
+
+    # else:
+
+    #     history = config["model"]["history"]
+
+    #     train_idxs, val_idxs = utils.train_val_history_idx_split(Xfull, history)
+
+    #     large_train_params["steps_per_epoch"] = (
+    #         len(train_idxs) // large_train_params["batch_size"]
+    #     )
+    #     large_train_params["validation_steps"] = (
+    #         len(val_idxs) // large_train_params["batch_size"]
+    #     )
+    #     config.update({"train": large_train_params})
+
+    #     event_detector = train_forecast_model_by_idxs(
+    #         model_type, config, Xfull, train_idxs, val_idxs
+    #     )
+    #     print("-----------------------------------------------")
+    #     print(val_idxs)
+    #     # Search for the best tuning of the window and theta parameters
+    #     hyperparameter_search(
+    #         event_detector,
+    #         model_type,
+    #         config,
+    #         Xfull,
+    #         Xtest,
+    #         Ytest,
+    #         dataset_name,
+    #         val_idxs=val_idxs,
+    #         test_split=test_split,
+    #         run_name=run_name,
+    #         verbose=0,
+    #     )
 
     save_model(event_detector, config, run_name=run_name)
 
