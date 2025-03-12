@@ -1,55 +1,112 @@
+import json
 import numpy as np
-import joblib
+import pdb
 from sklearn.ensemble import RandomForestRegressor
-from tqdm import tqdm
+from sklearn.preprocessing import StandardScaler
+from .detector import ICSDetector
+import pickle
 
-class RandomForestDetector:
+class RFRegressor(ICSDetector):
+    """ Random Forest Regressor-based event detection. """
+    
     def __init__(self, **kwargs):
+        """ Initializes the RFRegressor with default parameters. """
+        
         params = {
-            'n_estimators': 100,
+            'n_estimators': 50,
+            'max_depth': None,
             'random_state': 42,
-            'history': 100,
+            'history': 50,
             'verbose': 1
         }
-        params.update(kwargs)
-        self.params = params
-        self.model = RandomForestRegressor(
-            n_estimators=self.params['n_estimators'],
-            random_state=self.params['random_state']
-        )
-
-    def create_model(self):
-        # Random Forest không cần khởi tạo model trước khi train
-        pass
-
-    def train(self, Xtrain, Ytrain, validation_data=None, **kwargs):
-        Xtrain_flat = Xtrain.reshape(Xtrain.shape[0], -1)
-        Ytrain_flat = Ytrain.reshape(Ytrain.shape[0], -1)
-        print("X_train_flat shape",Xtrain_flat.shape)
-        print("Y_train shape:", Ytrain_flat.shape)
-        print("Training Random Forest...")
-        self.model.fit(Xtrain_flat, Ytrain_flat)
         
-        print("Training Completed!")
+        for key, item in kwargs.items():
+            params[key] = item
+        
+        self.params = params
+        self.scaler = StandardScaler()
+        self.model = RandomForestRegressor(n_estimators=self.params['n_estimators'],
+                                           max_depth=self.params['max_depth'],
+                                           random_state=self.params['random_state'],
+                                           verbose=self.params['verbose'])
+    
+    def transform_to_window_data(self, dataset, target, target_size=1):
+        """ Transforms data into windows for time series forecasting. """
+        data, labels = [], []
+        history = self.params['history']
+
+        for i in range(history, len(dataset) - target_size):
+            data.append(dataset[i - history:i])
+            labels.append(target[i + target_size])
+        
+        return np.array(data), np.array(labels)
+    
+    def train(self, Xtrain, Ytrain):
+        """ Trains the RF Regressor model with progress display. """
+        if self.params['verbose']:
+            print("Starting training...")
+
+        # Biến đổi dữ liệu đầu vào
+
+        # Làm phẳng đầu vào
+        Xtrain = Xtrain.reshape(Xtrain.shape[0], -1)
+        Xtrain = self.scaler.fit_transform(Xtrain)
+        #Small data
+        # X_train_small = Xtrain[0:10]
+        # Y_train_small = Ytrain[0:10]
+        # self.model.fit(X_train_small, Y_train_small)
+
+        # Huấn luyện mô hình
+        self.model.fit(Xtrain, Ytrain)
+
+        if self.params['verbose']:
+            print("Training completed.")
 
     def predict(self, X):
-        X_flat = X.reshape(X.shape[0], -1)
-        preds = self.model.predict(X_flat)
-        return preds.reshape(X.shape[0], -1)
-
-    def reconstruction_errors(self, X, batches=False):
-        predictions = self.predict(X)
-        Y_true = X[:, -1, :]  # target là timestep tiếp theo giống như DL
-        errors = (predictions - Y_true) ** 2
+        """ Makes predictions using the trained model. """
         
-        return errors
 
-    def cached_detect(self, errors, theta, window=1):
-        # Hàm này giống các DL khác, biến đổi lỗi thành labels bất thường
-        return (errors > theta).astype(int)
+        # Làm phẳng đầu vào
+        X = X.reshape(X.shape[0], -1)
+        X = self.scaler.transform(X)
 
+        return self.model.predict(X)
+    
+    def detect(self, x, theta, window=1):
+        """ Performs anomaly detection based on reconstruction errors. """
+        
+        reconstruction_error = self.reconstruction_errors(x)
+        instance_errors = reconstruction_error.mean(axis=1)
+        return self.cached_detect(instance_errors, theta, window)
+    
+    def cached_detect(self, instance_errors, theta, window=1):
+        """ Uses precomputed errors for detection. """
+        detection = instance_errors > theta
+        if window > 1:
+            detection = np.convolve(detection, np.ones(window), 'same') // window
+        return detection
+    
+    def reconstruction_errors(self, x, batches= False):
+        """ Computes reconstruction errors. """
+        Xwindow, Ywindow = self.transform_to_window_data(x, x)
+
+        # Đảm bảo predict() trả về cùng kích thước với Ywindow
+        predictions = self.predict(Xwindow)
+        if predictions.shape != Ywindow.shape:
+            raise ValueError(f"Prediction shape {predictions.shape} does not match Ywindow shape {Ywindow.shape}")
+
+        return (predictions - Ywindow) ** 2
     def save(self, filename):
-        joblib.dump(self.model, f"{filename}.pkl")
+        """ Save the trained Random Forest model using pickle. """
+        with open(filename + '.pkl', 'wb') as f:
+            pickle.dump(self.model, f)
+        print(f"✅ RF model saved at {filename}.pkl")
 
-    def load(self, path):
-        self.model = joblib.load(path)
+    def load(self, filename):
+        """ Load the trained Random Forest model using pickle. """
+        with open(filename + '.pkl', 'rb') as f:
+            self.model = pickle.load(f)
+        print(f"✅ RF model loaded from {filename}.pkl")
+
+if __name__ == "__main__":
+    print("Not a main file.")

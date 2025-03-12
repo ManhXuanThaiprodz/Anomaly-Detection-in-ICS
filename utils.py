@@ -106,7 +106,7 @@ def get_argparser():
     
     parser.add_argument("model", 
         help="Type of model to use",
-        choices=['ID', 'LIN', 'AE', 'CNN', 'DNN', 'GRU', 'LSTM', 'RF'],
+        choices=['ID', 'LIN', 'AE', 'CNN', 'DNN', 'GRU', 'LSTM', 'RF', 'XG'],
         default='AE')
 
     parser.add_argument("dataset", 
@@ -188,6 +188,28 @@ def get_argparser():
         default=3,
         type=int,
         help="Kernel Size of the CNN")
+    
+    # Xgboost
+    ### XGBoost
+    parser.add_argument("--xg_model_params_n_estimators", 
+        default=200,
+        type=int,
+        help="Number of trees (n_estimators) for XGBoost model")
+
+    parser.add_argument("--xg_model_params_max_depth", 
+        default=6,
+        type=int,
+        help="Maximum depth of trees in XGBoost model")
+
+    parser.add_argument("--xg_model_params_learning_rate", 
+        default=0.1,
+        type=float,
+        help="Learning rate for XGBoost model")
+
+    parser.add_argument("--xg_model_params_history", 
+        default=100,
+        type=int,
+        help="History window size for XGBoost")
 
     return parser
 
@@ -291,13 +313,31 @@ def update_config_model(args, config, model_type, dataset_name):
             'n_estimators': args.rf_model_params_n_estimators,
             'history': args.rf_model_params_history,
             'random_state': 42,
-            'verbose': 1
+            'verbose': 2
         }
 
         config.update({
             'model': rf_model_params,
             'name': f'{model_type}-{dataset_name}-hist{args.rf_model_params_history}-trees{args.rf_model_params_n_estimators}'
         })
+    elif model_type == 'XG':
+    
+        # XGBoost parameters
+        xg_model_params = {
+            'n_estimators': args.xg_model_params_n_estimators,
+            'max_depth': args.xg_model_params_max_depth,
+            'learning_rate': args.xg_model_params_learning_rate,
+            'history': args.xg_model_params_history,
+            'random_state': 42,
+            'verbose': 2
+        }
+
+        config.update({
+            'model': xg_model_params,
+            'name': f'{model_type}-{dataset_name}-hist{args.xg_model_params_history}-trees{args.xg_model_params_n_estimators}-depth{args.xg_model_params_max_depth}-lr{args.xg_model_params_learning_rate}'
+        })
+
+
 
 
     return

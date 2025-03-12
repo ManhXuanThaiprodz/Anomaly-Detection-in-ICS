@@ -98,7 +98,8 @@ def fb_score(ypred, ytrue, beta=1):
 
 	prec = precision(ypred, ytrue) 
 	rec = recall(ypred, ytrue) 
-
+	print("prec: ", prec)
+	print("rec :", rec)
 	if prec == 0 and rec == 0:
 		return 0
 

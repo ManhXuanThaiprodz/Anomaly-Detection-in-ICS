@@ -31,16 +31,13 @@ import pdb
 import pickle
 import sys
 import time
-from detector.rf import RandomForestDetector
 from sklearn.multioutput import MultiOutputRegressor
-from detector.Xgboost import XGBoostDetector
-from tqdm import tqdm
-from xgboost import XGBRegressor
 # Ignore ugly futurewarnings from np vs tf.
 import warnings
 from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
 import numpy as np
+from sklearn.metrics import confusion_matrix
 
 # Data science ML
 import pandas as pd
@@ -52,13 +49,13 @@ import tensorflow as tf
 from sklearn.metrics import precision_recall_curve, roc_curve, precision_score, recall_score,classification_report, f1_score, accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from tqdm import tqdm
+
 import metrics
 import utils
 from data_loader import load_test_data, load_train_data
 
 # Custom packages
-from detector import autoencoder, cnn, dnn, gru, identity, linear, lstm
+from detector import autoencoder, cnn, dnn, gru, identity, linear, lstm, rf,Xgboost
 os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 os.environ['MLIR_CRASH_REPRODUCER_DIRECTORY'] = "0" 
 # check if gpu is available
@@ -110,7 +107,7 @@ def train_forecast_model(model_type, config, Xtrain, Xval, Ytrain, Yval):
     elif model_type == "ID":
         event_detector = identity.Identity(**model_params)
     elif model_type == "RF":
-        event_detector = RandomForestDetector(**model_params)
+        event_detector = rf.RFRegressor(**model_params)
     else:
         print(f"Model type {model_type} is not supported.")
         return
@@ -143,26 +140,56 @@ def train_forecast_model_by_idxs(model_type, config, Xfull, train_idxs, val_idxs
     elif model_type == "ID":
         event_detector = identity.Identity(**model_params)
     elif model_type == "RF":
-        event_detector = RandomForestDetector(**model_params)
+        event_detector = rf.RFRegressor(**model_params)
     else:
         print(f"Model type {model_type} is not supported.")
         return
 
     event_detector.create_model()
+    
+    event_detector.train_by_idx(Xfull, train_idxs, val_idxs,
+            validation_data=True,
+            **train_params)
+    return event_detector
 
-   
-    if model_type != "RF":
-        event_detector.train_by_idx(
-            Xfull, train_idxs, val_idxs, validation_data=True, **train_params
-        )
+def train_ml_model(model_type, config, Xtrain, Ytrain):
+    """
+    Hàm tổng quát để huấn luyện các thuật toán Machine Learning khác nhau (RF, XGBoost, v.v.).
+
+    Args:
+        model_type (str): Loại mô hình cần huấn luyện (RF, XG).
+        config (dict): Cấu hình mô hình.
+        Xtrain (np.array): Dữ liệu đầu vào huấn luyện.
+        Ytrain (np.array): Nhãn đầu ra tương ứng.
+
+    Returns:
+        event_detector: Mô hình ML đã được huấn luyện.
+    """
+    
+    model_params = config["model"]
+    
+    if model_type == "RF":
+        print("Initializing Random Forest Regressor...")
+        event_detector = rf.RFRegressor(**model_params)
+
+    elif model_type == "XG":
+        print("Initializing XGBoost Regressor...")
+        event_detector = Xgboost.XGBoostRegressor(**model_params)
+    
     else:
-        # Chuẩn bị dữ liệu dạng window riêng cho RF
-        history = model_params['history']
-        Xtrain, Ytrain = utils.transform_to_window_data(Xfull[train_idxs], Xfull[train_idxs], history)
-        event_detector.train(Xtrain, Ytrain)
+        raise ValueError(f"Unsupported model type: {model_type}")
 
-   
+    # Biến đổi dữ liệu thành dạng cửa sổ (windowed format)
+    Xtrain_windowed, Ytrain_windowed = event_detector.transform_to_window_data(Xtrain, Ytrain)
 
+    print("X_train_windowed shape:", Xtrain_windowed.shape)
+    print("Y_train_windowed shape:", Ytrain_windowed.shape)
+
+    # Huấn luyện mô hình
+    event_detector.train(Xtrain_windowed, Ytrain_windowed)
+
+    print(f"✅ {model_type} Training Completed!")
+    
     return event_detector
 
 
@@ -254,8 +281,11 @@ def hyperparameter_search(
                     test_instance_errors, theta=theta, window=window
                 )
                 # Yhat = Yhat[window-1:].astype(int)
-
+                print("Yhat", Yhat)
+                print("Ytest_val", Ytest_val)
+                Yhat_trunc, Ytest_trunc = utils.normalize_array_length(Yhat, Ytest)
                 choice_value = metric_func(Yhat, Ytest_val)
+                print(choice_value)
 
                 if verbose > 0:
                     print(
@@ -362,6 +392,15 @@ def hyperparameter_search(
         final_Yhat = event_detector.best_cached_detect(final_test_instance_errors)
         # final_Yhat = final_Yhat[best_window-1:].astype(int)
 
+        # confusion matrix 
+        cm = confusion_matrix(Ytest_test, final_Yhat)
+        # Chuyển thành DataFrame và lưu vào CSV
+        df_cm = pd.DataFrame(cm, index=["Actual 0", "Actual 1"], columns=["Predicted 0", "Predicted 1"])
+        df_cm.to_csv(f"{model_name}-confusion_matrix.csv", index=True)
+
+        print("Confusion matrix đã được lưu vào 'confusion_matrix.csv'")
+
+
         metric_func = metrics.get(metric)
         final_value = metric_func(final_Yhat, Ytest_test)
         print(
@@ -386,6 +425,7 @@ def hyperparameter_search(
         ax_roc.set_ylabel("True Positive Rate")
         ax_roc.set_title("ROC Curve")
         ax_roc.legend()
+
         try:
             fig_roc.savefig(f"plots/{run_name}/{model_name}-roc.pdf")
         except FileNotFoundError:
@@ -421,14 +461,27 @@ def hyperparameter_search(
 
 def save_model(event_detector, config, run_name="results"):
     model_name = config["name"]
+    directory = f"models/{run_name}"
+    filename = f"{directory}/{model_name}"
+
+    # Tạo thư mục nếu chưa tồn tại
+    os.makedirs(directory, exist_ok=True)
+
     try:
-        event_detector.save(f"models/{run_name}/{model_name}")
-    except FileNotFoundError:
-        event_detector.save(f"models/results/{model_name}")
-        print(
-            f"Directory models/{run_name}/ not found, model {model_name} saved at models/results/ instead"
-        )
-        print(f"Note: we recommend creating models/{run_name}/ to store this model")
+        # Nếu là mô hình ML (Random Forest hoặc XGBoost)
+        if isinstance(event_detector, (rf.RFRegressor, Xgboost.XGBoostRegressor)):
+            with open(filename + ".pkl", "wb") as f:
+                pickle.dump(event_detector.model, f)
+            print(f"✅ Model saved at {filename}.pkl")
+
+        # Nếu là mô hình Deep Learning (Keras)
+        else:
+            event_detector.inner.save(filename + ".h5")
+            print(f"✅ Model saved at {filename}.h5")
+
+    except Exception as e:
+        print(f"⚠️ Error saving model: {e}")
+
 
 
 # functions
@@ -489,7 +542,7 @@ def parse_arguments():
 
     parser.add_argument(
     "--rf_n_estimators",
-    default=200,
+    default=100,
     type=int,
     help="Number of trees in Random Forest (n_estimators)"
     )   
@@ -497,7 +550,7 @@ def parse_arguments():
 
     parser.add_argument(
     "--rf_model_params_n_estimators",
-    default=200,
+    default=100,
     type=int,
     help="Number of trees (n_estimators) for Random Forest model"
     )
@@ -641,11 +694,11 @@ if __name__ == "__main__":
     print("Xtest shape: ", Xtest.shape)
     print("Ytest shape: ", Ytest.shape)
 
-    X_train_windowed, Y_train_windowed = utils.transform_to_window_data(Xfull, Xfull, history=100)
+    # X_train_windowed, Y_train_windowed = utils.transform_to_window_data(Xfull, Xfull, history=100)
     #X_test_windowed, Y_test_windowed = utils.transform_to_window_data(Xtest, Ytest, history=100)
 
-    print("X_train_windowed shape: ", X_train_windowed.shape)
-    print("Y_train_windowed shape: ", Y_train_windowed.shape)
+    # print("X_train_windowed shape: ", X_train_windowed.shape)
+    # print("Y_train_windowed shape: ", Y_train_windowed.shape)
     # print("X_test_windowed shape: ", X_test_windowed.shape)
     # print("Y_test_windowed shape: ", Y_test_windowed.shape)
 
@@ -655,141 +708,119 @@ if __name__ == "__main__":
     model_params = config["model"]
 
 
-    ################
     
-    
-    # Xtrain_flat = X_train_windowed.reshape(X_train_windowed.shape[0], -1)
-    # Ytrain_flat = Y_train_windowed.reshape(Y_train_windowed.shape[0], -1)
-    # Xtrain_small = Xtrain_flat[:100]
-    # Ytrain_small = Ytrain_flat[:100]
-    # print("XGBoost training...")
-    # event_detector.fit(Xtrain_small, Ytrain_small)
-    # print("XGBoost training completed!")
-    event_detector = XGBoostDetector(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42, verbosity =3)
-    event_detector.train(X_train_windowed, Y_train_windowed)
-    Ytest = Ytest.astype(int)
-    Xtest_val, Xtest_test, Ytest_val, Ytest_test = utils.custom_train_test_split(
-        dataset_name, Xtest, Ytest, test_size=test_split, shuffle=False
-    )
-        #MSE
-    test_errors = event_detector.reconstruction_errors(Xtest_val, batches=True)
-    test_instance_errors = test_errors.mean(axis=1)
-    print("MSE: ", test_instance_errors)
-
-    # hyperparameter_search(
-    #         event_detector,
-    #         model_type,
-    #         config,
-    #         Xfull,
-    #         Xtest,
-    #         Ytest,
-    #         dataset_name,
-    #         test_split=test_split,
-    #         run_name=run_name,
-    #         verbose=0,
-    #     )
-    ################
 
     
 
-    # # Updates training parameters such as batch size, learning rate, etc.
-    # if model_type == "AE":
-    #     config.update({"train": ae_train_params})
-    #     Xtrain, Xval, _, _ = train_test_split(
-    #         Xfull, Xfull, test_size=0.2, random_state=42, shuffle=True
-    #     )
-    #     event_detector = train_reconstruction_model(model_type, config, Xtrain, Xval)
+    # Updates training parameters such as batch size, learning rate, etc.
+    if model_type == "AE":
+        config.update({"train": ae_train_params})
+        Xtrain, Xval, _, _ = train_test_split(
+            Xfull, Xfull, test_size=0.2, random_state=42, shuffle=True
+        )
+        event_detector = train_reconstruction_model(model_type, config, Xtrain, Xval)
 
-    #     # Search for the best tuning of the window and theta parameters
-    #     hyperparameter_search(
-    #         event_detector,
-    #         model_type,
-    #         config,
-    #         Xval,
-    #         Xtest,
-    #         Ytest,
-    #         dataset_name,
-    #         test_split=test_split,
-    #         run_name=run_name,
-    #         verbose=0,
-    #     )
-    # elif model_type == "RF":
-    #     event_detector = RandomForestRegressor(n_estimators=100, random_state=42, warm_start=False, verbose=2)
+        # Search for the best tuning of the window and theta parameters
+        hyperparameter_search(
+            event_detector,
+            model_type,
+            config,
+            Xval,
+            Xtest,
+            Ytest,
+            dataset_name,
+            test_split=test_split,
+            run_name=run_name,
+            verbose=0,
+        )
+    #elif model_type =="XG":
+        ################
+    
+    
+        # # Xtrain_flat = X_train_windowed.reshape(X_train_windowed.shape[0], -1)
+        # # Ytrain_flat = Y_train_windowed.reshape(Y_train_windowed.shape[0], -1)
+        # # Xtrain_small = Xtrain_flat[:100]
+        # # Ytrain_small = Ytrain_flat[:100]
+        # # print("XGBoost training...")
+        # # event_detector.fit(Xtrain_small, Ytrain_small)
+        # # print("XGBoost training completed!")
+        # event_detector = XGBoostDetector(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42, verbosity =3)
+        # event_detector.train(X_train_windowed, Y_train_windowed)
+        # # Ytest = Ytest.astype(int)
+        # # Xtest_val, Xtest_test, Ytest_val, Ytest_test = utils.custom_train_test_split(
+        # #     dataset_name, Xtest, Ytest, test_size=test_split, shuffle=False
+        # # )
+        # #     #MSE
+        # # test_errors = event_detector.reconstruction_errors(Xtest_val, batches=True)
+        # # test_instance_errors = test_errors.mean(axis=1)
+        # # print("MSE: ", test_instance_errors)
 
-    #     print("Đang train RF...")
+        # hyperparameter_search(
+        #         event_detector,
+        #         model_type,
+        #         config,
+        #         Xfull,
+        #         Xtest,
+        #         Ytest,
+        #         dataset_name,
+        #         test_split=test_split,
+        #         run_name=run_name,
+        #         verbose=0,
+        #     )
+        ###############
 
-    #     # Chuyển đổi dữ liệu về dạng phù hợp
-    #     Xtrain_flat = X_train_windowed.reshape(X_train_windowed.shape[0], -1)
-    #     Ytrain_flat = Y_train_windowed.reshape(Y_train_windowed.shape[0], -1)
+    elif model_type in ["RF", "XG"]:  # Nếu là thuật toán ML (RF hoặc XGBoost)
+        print(f"Training {model_type} Model...")
 
-    #     print("X_train_flat shape:", Xtrain_flat.shape)
-    #     print("Y_train_flat shape:", Ytrain_flat.shape)
+        event_detector = train_ml_model(model_type, config, Xfull, Xfull)
 
-    #     # Hiển thị một mẫu bất kỳ
-    #     sample_idx = 0  
-    #     sample_X = Xtrain_flat[sample_idx]  # (4300,)
-    #     sample_Y = Ytrain_flat[sample_idx]  # (43,)
+        # Thực hiện tìm kiếm tham số tối ưu
+        hyperparameter_search(
+            event_detector,
+            model_type,
+            config,
+            Xfull,
+            Xtest,
+            Ytest,
+            dataset_name,
+            test_split=test_split,
+            run_name=run_name,
+            verbose=1,
+        )
 
-    #     df_sample = pd.DataFrame([sample_X], columns=[f"Feature_{i}" for i in range(Xtrain_flat.shape[1])])
-    #     df_Y = pd.DataFrame([sample_Y], columns=[f"Target_{i}" for i in range(Ytrain_flat.shape[1])])
+    else:
 
-    #     print("\n📌 Dữ liệu X_train_flat:")
-    #     print(df_sample.head())
-    #     print("\n📌 Dữ liệu Y_train_flat:")
-    #     print(df_Y.head())
+        history = config["model"]["history"]
 
-    #     # Huấn luyện mô hình với thanh tiến trình
-    #     print("Training Random Forest with progress bar...")
-    #     event_detector.fit(Xtrain_flat, Ytrain_flat, )
-    #     print("Training Completed!")
+        train_idxs, val_idxs = utils.train_val_history_idx_split(Xfull, history)
 
-    #     # Search for the best tuning of the window and theta parameters
-    #     hyperparameter_search(
-    #         event_detector,
-    #         model_type,
-    #         config,
-    #         Xfull,
-    #         Xtest,
-    #         Ytest,
-    #         dataset_name,
-    #         test_split=test_split,
-    #         run_name=run_name,
-    #         verbose=0,
-    #     )
+        large_train_params["steps_per_epoch"] = (
+            len(train_idxs) // large_train_params["batch_size"]
+        )
+        large_train_params["validation_steps"] = (
+            len(val_idxs) // large_train_params["batch_size"]
+        )
+        config.update({"train": large_train_params})
 
-    # else:
-
-    #     history = config["model"]["history"]
-
-    #     train_idxs, val_idxs = utils.train_val_history_idx_split(Xfull, history)
-
-    #     large_train_params["steps_per_epoch"] = (
-    #         len(train_idxs) // large_train_params["batch_size"]
-    #     )
-    #     large_train_params["validation_steps"] = (
-    #         len(val_idxs) // large_train_params["batch_size"]
-    #     )
-    #     config.update({"train": large_train_params})
-
-    #     event_detector = train_forecast_model_by_idxs(
-    #         model_type, config, Xfull, train_idxs, val_idxs
-    #     )
-    #     print("-----------------------------------------------")
-    #     print(val_idxs)
-    #     # Search for the best tuning of the window and theta parameters
-    #     hyperparameter_search(
-    #         event_detector,
-    #         model_type,
-    #         config,
-    #         Xfull,
-    #         Xtest,
-    #         Ytest,
-    #         dataset_name,
-    #         val_idxs=val_idxs,
-    #         test_split=test_split,
-    #         run_name=run_name,
-    #         verbose=0,
-    #     )
+        event_detector = train_forecast_model_by_idxs(
+            model_type, config, Xfull, train_idxs, val_idxs
+        )
+        print("-----------------------------------------------")
+        print(val_idxs)
+        # Search for the best tuning of the window and theta parameters
+        hyperparameter_search(
+            event_detector,
+            model_type,
+            config,
+            Xfull,
+            Xtest,
+            Ytest,
+            dataset_name,
+            val_idxs=val_idxs,
+            test_split=test_split,
+            run_name=run_name,
+            verbose=0,
+        )
 
     save_model(event_detector, config, run_name=run_name)
 

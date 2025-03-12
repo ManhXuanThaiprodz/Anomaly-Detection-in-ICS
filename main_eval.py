@@ -181,7 +181,9 @@ def hyperparameter_eval(event_detector, model_type, config, val_errors, test_err
 
                 # Need to truncate on inner loop, since window values change
                 Yhat = event_detector.cached_detect(test_errors, theta = theta, window = window)
+                print("Yhat1", Yhat)
                 Yhat = Yhat[window-1:].astype(int)
+                print("Yhat2", Yhat)
                 Yhat_trunc, Ytest_trunc = utils.normalize_array_length(Yhat, Ytest)
                 choice_value = metric_func(Yhat_trunc, Ytest_trunc)
                 metric_vals[percentile_idx, window_idx] = choice_value
